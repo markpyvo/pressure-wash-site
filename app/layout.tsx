@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Montserrat, Geist_Mono } from "next/font/google";
 import Image from "next/image";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const montserrat = Montserrat({
+  variable: "--font-montserrat",
   subsets: ["latin"],
 });
 
@@ -29,10 +29,10 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-white`}
+        className={`${montserrat.variable} ${geistMono.variable} antialiased bg-white`}
       >
         {/* Contact Bar */}
-        <div className="py-3 px-6" style={{ backgroundColor: "#f5f1e8" }}>
+        <div className="py-3 px-6" style={{ backgroundColor: "#ffffff" }}>
           <div className="max-w-6xl mx-auto flex justify-center items-center gap-6 text-sm md:text-base">
             <a href="tel:+2066197551" className="hover:text-blue-400 transition flex items-center gap-2" style={{ color: "#2d3a6b" }}>
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -80,12 +80,15 @@ export default function RootLayout({
                   <a href="/window-cleaning" className="block px-4 py-2 hover:bg-gray-100 transition font-semibold">
                     Window Cleaning
                   </a>
+                  <a href="/gutter-cleaning" className="block px-4 py-2 hover:bg-gray-100 transition font-semibold">
+                    Gutter Cleaning
+                  </a>
                 </div>
               </div>
               <a href="/gallery" className="text-white hover:text-blue-300 transition font-bold text-lg">
                 Gallery
               </a>
-              <a href="#about" className="text-white hover:text-blue-300 transition font-bold text-lg">
+              <a href="/about" className="text-white hover:text-blue-300 transition font-bold text-lg">
                 About
               </a>
               <a href="/quote" className="text-white hover:text-blue-300 transition font-bold text-lg">
@@ -151,6 +154,11 @@ export default function RootLayout({
                   <li>
                     <a href="/window-cleaning" className="hover:text-blue-300 transition">
                       Window Cleaning
+                    </a>
+                  </li>
+                  <li>
+                    <a href="/gutter-cleaning" className="hover:text-blue-300 transition">
+                      Gutter Cleaning
                     </a>
                   </li>
                 </ul>

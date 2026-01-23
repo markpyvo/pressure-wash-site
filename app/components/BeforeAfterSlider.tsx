@@ -4,7 +4,7 @@ import Image from 'next/image';
 import { useState, useRef, useEffect, useCallback } from 'react';
 
 export default function BeforeAfterSlider() {
-  const [sliderPosition, setSliderPosition] = useState(0);
+  const [sliderPosition, setSliderPosition] = useState(50);
   const [isDragging, setIsDragging] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number | null>(null);

@@ -3,23 +3,24 @@
 html, body {
   margin: 0;
   padding: 0;
+  overflow-x: hidden;
 }
 
 :root {
-  --background: #f5f1e8;
+  --background: #ffffff;
   --foreground: #171717;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
+  --font-sans: var(--font-montserrat);
   --font-mono: var(--font-geist-mono);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #f5f1e8;
+    --background: #ffffff;
     --foreground: #171717;
   }
 }
