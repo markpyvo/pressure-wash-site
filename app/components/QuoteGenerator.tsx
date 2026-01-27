@@ -1,9 +1,12 @@
 'use client';
 
 import { useState } from 'react';
+import usePlacesAutocomplete, { getGeocode, getLatLng } from 'use-places-autocomplete';
 
 interface QuoteData {
   address: string;
+  lat: number | null;
+  lng: number | null;
   squareFeet: number;
   stories: number;
   sidingType: string;
@@ -20,66 +23,17 @@ interface QuoteData {
   satelliteImage: string | null;
 }
 
-function simulateQuoteLogic(data: QuoteData): { min: number; max: number } {
-  let basePrice = 0;
-
-  if (data.stories === 1) {
-    basePrice = 350;
-  } else if (data.stories === 2) {
-    basePrice = 450;
-  } else {
-    basePrice = 500;
-  }
-
-  const sqftAdjustment = data.squareFeet / 2500;
-  basePrice *= sqftAdjustment;
-
-  const sidingAdjustment: { [key: string]: number } = {
-    vinyl: 1,
-    wood: 1.15,
-    brick: 1.25,
-    stucco: 1.1,
-  };
-  basePrice *= sidingAdjustment[data.sidingType] || 1;
-
-  let addOnsCost = 0;
-  if (data.addOns.driveway) addOnsCost += 150;
-  if (data.addOns.gutters) addOnsCost += 120;
-  if (data.addOns.deckPatio) addOnsCost += 200;
-
-  const min = Math.round(basePrice + addOnsCost);
-  const max = Math.round(min * 1.15);
-
-  return { min, max };
-}
-
-function mockPlacesAutocomplete(input: string): string[] {
-  if (input.length < 3) return [];
-  const mockAddresses = [
-    `${input} Main St, Langley, BC`,
-    `${input} Oak Ave, Langley, BC`,
-    `${input} Maple Dr, Langley, BC`,
-  ];
-  return mockAddresses.slice(0, 3);
-}
-
-function mockFetchSatelliteImage(address: string): Promise<string> {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve(
-        `https://api.mapbox.com/styles/v1/mapbox/satellite-v9/static/-122.75,49.05,15,0,0/600x400@2x?access_token=pk.eyJ1IjoibWFwYm94IiwiYSI6ImNpejY4NXVycTA2emYycW1qYTk5bWV2MjMifQ.rJcFIG214AriISLbB6B5aw`
-      );
-    }, 800);
-  });
+function getStaticMapUrl(lat: number, lng: number) {
+  return `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=20&size=600x400&maptype=satellite&key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY}`;
 }
 
 const QuoteGenerator = () => {
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
-  const [addressSuggestions, setAddressSuggestions] = useState<string[]>([]);
-  const [showSuggestions, setShowSuggestions] = useState(false);
   const [data, setData] = useState<QuoteData>({
     address: '',
+    lat: null,
+    lng: null,
     squareFeet: 2500,
     stories: 2,
     sidingType: 'vinyl',
@@ -93,25 +47,35 @@ const QuoteGenerator = () => {
     satelliteImage: null,
   });
 
-  const handleAddressInput = (input: string) => {
-    setData((prev) => ({ ...prev, address: input }));
-    if (input.length >= 3) {
-      const suggestions = mockPlacesAutocomplete(input);
-      setAddressSuggestions(suggestions);
-      setShowSuggestions(true);
-    } else {
-      setShowSuggestions(false);
-    }
-  };
+  const {
+    value,
+    suggestions,
+    setValue,
+    clearSuggestions,
+  } = usePlacesAutocomplete({
+    debounce: 300,
+  });
 
   const handleAddressSelect = async (address: string) => {
-    setData((prev) => ({ ...prev, address }));
-    setShowSuggestions(false);
     setLoading(true);
+    try {
+      const results = await getGeocode({ address });
+      const formattedAddress = results[0]?.formatted_address ?? address;
+      const { lat, lng } = await getLatLng(results[0]);
+      const imageUrl = getStaticMapUrl(lat, lng);
 
-    const imageUrl = await mockFetchSatelliteImage(address);
-    setData((prev) => ({ ...prev, satelliteImage: imageUrl }));
-    setLoading(false);
+      setData((prev) => ({
+        ...prev,
+        address: formattedAddress,
+        lat,
+        lng,
+        satelliteImage: imageUrl,
+      }));
+      setValue(formattedAddress, false);
+      clearSuggestions();
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleStorySelect = (storyCount: number) => {
@@ -125,11 +89,35 @@ const QuoteGenerator = () => {
   const handleNextStep = async () => {
     if (step === 4) {
       setLoading(true);
-      setTimeout(() => {
-        const quote = simulateQuoteLogic(data);
-        setData((prev) => ({ ...prev, quote }));
+      try {
+        const response = await fetch('/api/quote', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            address: data.address,
+            stories: data.stories,
+            addOns: data.addOns,
+            lat: data.lat,
+            lng: data.lng,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to fetch quote');
+        }
+
+        const result = (await response.json()) as {
+          minPrice: number;
+          maxPrice: number;
+        };
+
+        setData((prev) => ({
+          ...prev,
+          quote: { min: result.minPrice, max: result.maxPrice },
+        }));
+      } finally {
         setLoading(false);
-      }, 2000);
+      }
     } else {
       setStep(step + 1);
     }
@@ -196,20 +184,20 @@ const QuoteGenerator = () => {
                 </label>
                 <input
                   type="text"
-                  value={data.address}
-                  onChange={(e) => handleAddressInput(e.target.value)}
+                  value={value}
+                  onChange={(e) => setValue(e.target.value)}
                   placeholder="123 Main St, Langley, BC..."
                   className="w-full px-4 py-4 border-2 border-gray-300 rounded-2xl focus:outline-none focus:border-blue-500 transition text-lg"
                 />
-                {showSuggestions && addressSuggestions.length > 0 && (
+                {suggestions.status === 'OK' && suggestions.data.length > 0 && (
                   <div className="absolute top-full left-0 right-0 mt-2 bg-white border-2 border-gray-300 rounded-2xl shadow-lg z-10">
-                    {addressSuggestions.map((suggestion, idx) => (
+                    {suggestions.data.map((suggestion) => (
                       <button
-                        key={idx}
-                        onClick={() => handleAddressSelect(suggestion)}
+                        key={suggestion.place_id}
+                        onClick={() => handleAddressSelect(suggestion.description)}
                         className="w-full text-left px-4 py-3 hover:bg-gray-50 transition border-b last:border-b-0"
                       >
-                        <p className="font-medium">{suggestion}</p>
+                        <p className="font-medium">{suggestion.description}</p>
                       </button>
                     ))}
                   </div>
@@ -375,9 +363,9 @@ const QuoteGenerator = () => {
 
               <div className="space-y-4">
                 {[
-                  { key: 'driveway', label: 'Driveway Cleaning', price: '+$150' },
-                  { key: 'gutters', label: 'Gutter Cleaning', price: '+$120' },
-                  { key: 'deckPatio', label: 'Deck/Patio Cleaning', price: '+$200' },
+                  { key: 'driveway', label: 'Driveway Cleaning' },
+                  { key: 'gutters', label: 'Gutter Cleaning' },
+                  { key: 'deckPatio', label: 'Deck/Patio Cleaning' },
                 ].map((addon) => (
                   <div
                     key={addon.key}
@@ -402,7 +390,6 @@ const QuoteGenerator = () => {
                       <p className="font-semibold text-lg" style={{ color: '#2d3a6b' }}>
                         {addon.label}
                       </p>
-                      <p className="text-sm text-gray-600">{addon.price}</p>
                     </div>
                     <div
                       className={`w-12 h-12 rounded-full flex items-center justify-center transition-all ${
