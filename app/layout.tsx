@@ -55,9 +55,9 @@ export default function RootLayout({
             <Image
               src="/logonotext.png"
               alt="PressureWash Logo"
-              width={60}
-              height={60}
-              className="h-auto w-auto flex-shrink-0"
+              width={100}
+              height={100}
+              className="w-14 h-14 flex-shrink-0"
             />
             <div className="flex gap-8 items-center flex-1 justify-center">
               <a href="/" className="text-white hover:text-blue-300 transition font-bold text-lg">
