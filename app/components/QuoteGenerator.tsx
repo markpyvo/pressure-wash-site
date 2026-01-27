@@ -64,6 +64,7 @@ const QuoteGenerator = () => {
       const { lat, lng } = await getLatLng(results[0]);
       const imageUrl = getStaticMapUrl(lat, lng);
 
+      console.log('Image URL generated:', imageUrl);
       setData((prev) => ({
         ...prev,
         address: formattedAddress,
