@@ -213,26 +213,6 @@ const QuoteGenerator = () => {
                       alt="Your property"
                       className="w-full h-full object-cover"
                     />
-                    <div className="absolute inset-0 bg-black bg-opacity-30 flex flex-col items-center justify-center">
-                      <h3 className="text-white text-2xl font-bold text-center mb-8">
-                        How many stories is this home?
-                      </h3>
-                      <div className="flex gap-4">
-                        {storyOptions.map((option) => (
-                          <button
-                            key={option.value}
-                            onClick={() => handleStorySelect(option.value)}
-                            className={`px-6 py-3 rounded-xl font-bold text-lg transition-all ${
-                              data.stories === option.value
-                                ? 'bg-white text-blue-600 shadow-lg'
-                                : 'bg-white bg-opacity-70 text-gray-800 hover:bg-opacity-90'
-                            }`}
-                          >
-                            {option.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
                   </div>
 
                   <div className="bg-blue-50 border-2 border-blue-200 rounded-2xl p-4">

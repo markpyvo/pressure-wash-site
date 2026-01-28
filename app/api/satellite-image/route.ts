@@ -13,13 +13,13 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const mapsUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=20&size=600x400&maptype=satellite&key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY}`;
+    const streetViewUrl = `https://maps.googleapis.com/maps/api/streetview?size=600x400&location=${lat},${lng}&key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY}`;
 
-    const response = await fetch(mapsUrl);
+    const response = await fetch(streetViewUrl);
 
     if (!response.ok) {
       return NextResponse.json(
-        { error: 'Failed to fetch satellite image' },
+        { error: 'Failed to fetch street view image' },
         { status: response.status }
       );
     }
@@ -34,9 +34,9 @@ export async function GET(request: NextRequest) {
       },
     });
   } catch (error) {
-    console.error('Satellite image API error:', error);
+    console.error('Street view API error:', error);
     return NextResponse.json(
-      { error: 'Failed to fetch satellite image' },
+      { error: 'Failed to fetch street view image' },
       { status: 500 }
     );
   }
