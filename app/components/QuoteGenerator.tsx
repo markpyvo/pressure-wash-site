@@ -62,9 +62,9 @@ const QuoteGenerator = () => {
       const results = await getGeocode({ address });
       const formattedAddress = results[0]?.formatted_address ?? address;
       const { lat, lng } = await getLatLng(results[0]);
-      const imageUrl = getStaticMapUrl(lat, lng);
+      // Use backend proxy for image to avoid CORS issues
+      const imageUrl = `/api/satellite-image?lat=${lat}&lng=${lng}`;
 
-      console.log('Image URL generated:', imageUrl);
       setData((prev) => ({
         ...prev,
         address: formattedAddress,
