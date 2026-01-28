@@ -30,6 +30,7 @@ function getStaticMapUrl(lat: number, lng: number) {
 const QuoteGenerator = () => {
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
   const [data, setData] = useState<QuoteData>({
     address: '',
     lat: null,
@@ -97,9 +98,11 @@ const QuoteGenerator = () => {
           body: JSON.stringify({
             address: data.address,
             stories: data.stories,
+            squareFeet: data.squareFeet,
             addOns: data.addOns,
             lat: data.lat,
             lng: data.lng,
+            email: data.email,
           }),
         });
 
@@ -108,14 +111,26 @@ const QuoteGenerator = () => {
         }
 
         const result = (await response.json()) as {
-          minPrice: number;
-          maxPrice: number;
+          minPrice?: number;
+          maxPrice?: number;
+          estate?: boolean;
+          message?: string;
         };
 
-        setData((prev) => ({
-          ...prev,
-          quote: { min: result.minPrice, max: result.maxPrice },
-        }));
+        if (result.estate) {
+          // Estate service - show premium message
+          setData((prev) => ({
+            ...prev,
+            quote: { min: 0, max: 0 }, // Placeholder
+          }));
+        } else {
+          setData((prev) => ({
+            ...prev,
+            quote: { min: result.minPrice || 0, max: result.maxPrice || 0 },
+          }));
+        }
+        // Move to thank you screen after quote is generated
+        setSubmitted(true);
       } finally {
         setLoading(false);
       }
@@ -144,12 +159,132 @@ const QuoteGenerator = () => {
   return (
     <div className="min-h-screen bg-gradient-to-b from-white to-gray-50 py-12 px-6">
       <div className="max-w-2xl mx-auto">
+        {submitted ? (
+          // Thank You Page
+          <div className="text-center">
+            <div className="mb-12">
+              {data.squareFeet >= 4500 ? (
+                <>
+                  <svg className="w-24 h-24 mx-auto mb-6" fill="#2d3a6b" viewBox="0 0 24 24">
+                    <path d="M12 2L15.09 8.26h6.79l-5.5 3.99 2.09 6.26L12 14.5l-5.38 3.99 2.09-6.26-5.5-3.99h6.79L12 2z" />
+                  </svg>
+                  <h1 className="text-5xl font-bold mb-4" style={{ color: '#2d3a6b' }}>
+                    Estate Service Required
+                  </h1>
+                  <p className="text-2xl text-gray-600 mb-2">
+                    Your home qualifies for our Executive Soft Wash package
+                  </p>
+                </>
+              ) : (
+                <>
+                  <svg className="w-24 h-24 mx-auto mb-6 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <h1 className="text-5xl font-bold mb-4" style={{ color: '#2d3a6b' }}>
+                    Thank You!
+                  </h1>
+                  <p className="text-2xl text-gray-600 mb-2">
+                    We've received your quote request
+                  </p>
+                </>
+              )}
+              <p className="text-lg text-gray-500">
+                {data.squareFeet < 4500 && 'Mark will contact you before the end of the day'}
+              </p>
+            </div>
+
+            <div className="bg-white rounded-3xl shadow-lg p-8 md:p-12 mb-8">
+              <div className="space-y-6">
+                {data.squareFeet >= 4500 ? (
+                  // Estate message
+                  <div>
+                    <p className="text-gray-600 mb-4 text-lg leading-relaxed">
+                      Based on the size of your property ({data.squareFeet.toLocaleString()} sq ft), your home qualifies for our <strong>Executive Soft Wash package</strong>.
+                    </p>
+                    <p className="text-gray-600 mb-4 text-lg leading-relaxed">
+                      For premium properties like yours, we perform a manual safety assessment to ensure delicate materials (slate, cedar, imported stone, copper gutters) are protected with our most specialized techniques.
+                    </p>
+                    <p className="text-gray-600 text-lg leading-relaxed font-semibold">
+                      Mark will call you within 15 minutes to discuss your property's unique needs and provide a custom rate.
+                    </p>
+                  </div>
+                ) : (
+                  // Standard quote
+                  <div>
+                    <p className="text-gray-600 mb-2">Quote Summary</p>
+                    <div className="bg-gray-50 rounded-2xl p-6 space-y-3">
+                      <div className="flex justify-between">
+                        <span className="text-gray-700">Address:</span>
+                        <span className="font-semibold">{data.address}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-700">Stories:</span>
+                        <span className="font-semibold">{data.stories}</span>
+                      </div>
+                      {Object.values(data.addOns).some((v) => v) && (
+                        <div className="border-t pt-3">
+                          <span className="text-gray-700">Add-ons:</span>
+                          <div className="text-sm text-gray-600 mt-1">
+                            {data.addOns.driveway && <div>✓ Driveway Cleaning</div>}
+                            {data.addOns.gutters && <div>✓ Gutter Cleaning</div>}
+                            {data.addOns.deckPatio && <div>✓ Deck/Patio Cleaning</div>}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                <div className={data.squareFeet >= 4500 ? '' : 'py-6 border-t'}>
+                  {data.squareFeet < 4500 && (
+                    <>
+                      <p className="text-gray-600 text-lg mb-2">Estimated Price Range</p>
+                      <p className="text-5xl font-bold" style={{ color: '#2d3a6b' }}>
+                        ${data.quote?.min.toLocaleString()} - ${data.quote?.max.toLocaleString()}
+                      </p>
+                      {Object.values(data.addOns).some((v) => v) && (
+                        <p className="text-sm text-gray-500 mt-4">
+                          + Add-ons (quoted in person)
+                        </p>
+                      )}
+                    </>
+                  )}
+                  <p className="text-sm text-gray-500 mt-4">
+                    Confirmation email sent to {data.email}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <p className="text-gray-600">Have questions? Contact us anytime</p>
+              <div className="flex flex-col md:flex-row gap-4 justify-center">
+                <a
+                  href="tel:(206)619-7551"
+                  className="px-8 py-4 rounded-xl font-bold text-lg transition-all"
+                  style={{ backgroundColor: '#2d3a6b', color: 'white' }}
+                >
+                  Call Us: (206) 619-7551
+                </a>
+                <a
+                  href="mailto:waterboys@example.com"
+                  className="px-8 py-4 rounded-xl font-bold text-lg transition-all border-2"
+                  style={{ borderColor: '#2d3a6b', color: '#2d3a6b' }}
+                >
+                  Email Us
+                </a>
+              </div>
+            </div>
+          </div>
+        ) : (
+          // Original wizard pages
+          <>
         <div className="text-center mb-12">
           <h1 className="text-5xl font-bold mb-3" style={{ color: '#2d3a6b' }}>
             Get Your Free Quote
           </h1>
           <p className="text-lg text-gray-600">
-            We'll analyze your home and create a personalized estimate
+            House Washing - We'll analyze your home and create a personalized estimate
           </p>
         </div>
 
@@ -511,21 +646,22 @@ const QuoteGenerator = () => {
             className="flex-1 px-6 py-4 rounded-xl font-bold text-lg text-white transition-all hover:opacity-90 disabled:opacity-50"
             style={{ backgroundColor: '#2d3a6b' }}
           >
-            {loading ? 'Analyzing...' : data.quote && step === 4 ? 'Send Quote to Email' : step === 4 ? 'Generate Quote' : 'Next'}
+            {loading ? 'Analyzing...' : step === 4 ? 'Generate Quote' : 'Next'}
           </button>
         </div>
+        <style>{`
+          @keyframes spin {
+            from {
+              transform: rotate(0deg);
+            }
+            to {
+              transform: rotate(360deg);
+            }
+          }
+        `}</style>
+        </>
+        )}
       </div>
-
-      <style>{`
-        @keyframes spin {
-          from {
-            transform: rotate(0deg);
-          }
-          to {
-            transform: rotate(360deg);
-          }
-        }
-      `}</style>
     </div>
   );
 };
