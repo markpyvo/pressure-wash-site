@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { Ratelimit } from '@upstash/ratelimit';
+import { Redis } from '@upstash/redis';
 
 interface QuoteRequest {
   address: string;
@@ -12,8 +14,57 @@ interface QuoteRequest {
   lng: number;
 }
 
+// Initialize Redis and Rate Limiter
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL || '',
+  token: process.env.UPSTASH_REDIS_REST_TOKEN || '',
+});
+
+const ratelimit = new Ratelimit({
+  redis,
+  limiter: Ratelimit.slidingWindow(5, '24 h'), // 5 requests per 24 hours
+  analytics: true,
+});
+
+// Get client IP address
+function getClientIp(request: NextRequest): string {
+  const forwardedFor = request.headers.get('x-forwarded-for');
+  if (forwardedFor) {
+    return forwardedFor.split(',')[0].trim();
+  }
+  return request.headers.get('x-real-ip') || '127.0.0.1';
+}
+
 export async function POST(request: NextRequest) {
   try {
+    // Get client IP for rate limiting
+    const clientIp = getClientIp(request);
+
+    // Check rate limit
+    const { success, limit, remaining, reset } = await ratelimit.limit(
+      `quote_${clientIp}`
+    );
+
+    // Prepare rate limit headers
+    const rateLimitHeaders = {
+      'X-RateLimit-Limit': limit.toString(),
+      'X-RateLimit-Remaining': remaining.toString(),
+      'X-RateLimit-Reset': reset.toString(),
+    };
+
+    if (!success) {
+      return NextResponse.json(
+        {
+          error: 'Too many requests. Maximum 5 quotes per 24 hours allowed.',
+          retryAfter: Math.ceil((reset - Date.now()) / 1000),
+        },
+        {
+          status: 429,
+          headers: rateLimitHeaders,
+        }
+      );
+    }
+
     const body = (await request.json()) as QuoteRequest;
 
     const { address, stories, addOns, lat, lng } = body;
@@ -22,7 +73,10 @@ export async function POST(request: NextRequest) {
     if (!address || !stories || !lat || !lng) {
       return NextResponse.json(
         { error: 'Missing required fields' },
-        { status: 400 }
+        {
+          status: 400,
+          headers: rateLimitHeaders,
+        }
       );
     }
 
@@ -56,7 +110,13 @@ export async function POST(request: NextRequest) {
     const minPrice = Math.round(subtotal);
     const maxPrice = Math.round(subtotal * 1.15); // 15% margin
 
-    return NextResponse.json({ minPrice, maxPrice }, { status: 200 });
+    return NextResponse.json(
+      { minPrice, maxPrice },
+      {
+        status: 200,
+        headers: rateLimitHeaders,
+      }
+    );
   } catch (error) {
     console.error('Quote API error:', error);
     return NextResponse.json(
