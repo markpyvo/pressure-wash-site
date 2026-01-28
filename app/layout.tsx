@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import { Montserrat, Geist_Mono } from "next/font/google";
 import Image from "next/image";
 import "./globals.css";
@@ -28,6 +29,12 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
+      <head>
+        <Script
+          src={`https://maps.googleapis.com/maps/api/js?key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY}&libraries=places`}
+          strategy="beforeInteractive"
+        />
+      </head>
       <body
         className={`${montserrat.variable} ${geistMono.variable} antialiased bg-white`}
       >

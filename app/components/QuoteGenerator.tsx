@@ -1,9 +1,12 @@
 'use client';
 
 import { useState } from 'react';
+import usePlacesAutocomplete, { getGeocode, getLatLng } from 'use-places-autocomplete';
 
 interface QuoteData {
   address: string;
+  lat: number | null;
+  lng: number | null;
   squareFeet: number;
   stories: number;
   sidingType: string;
@@ -20,66 +23,18 @@ interface QuoteData {
   satelliteImage: string | null;
 }
 
-function simulateQuoteLogic(data: QuoteData): { min: number; max: number } {
-  let basePrice = 0;
-
-  if (data.stories === 1) {
-    basePrice = 350;
-  } else if (data.stories === 2) {
-    basePrice = 450;
-  } else {
-    basePrice = 500;
-  }
-
-  const sqftAdjustment = data.squareFeet / 2500;
-  basePrice *= sqftAdjustment;
-
-  const sidingAdjustment: { [key: string]: number } = {
-    vinyl: 1,
-    wood: 1.15,
-    brick: 1.25,
-    stucco: 1.1,
-  };
-  basePrice *= sidingAdjustment[data.sidingType] || 1;
-
-  let addOnsCost = 0;
-  if (data.addOns.driveway) addOnsCost += 150;
-  if (data.addOns.gutters) addOnsCost += 120;
-  if (data.addOns.deckPatio) addOnsCost += 200;
-
-  const min = Math.round(basePrice + addOnsCost);
-  const max = Math.round(min * 1.15);
-
-  return { min, max };
-}
-
-function mockPlacesAutocomplete(input: string): string[] {
-  if (input.length < 3) return [];
-  const mockAddresses = [
-    `${input} Main St, Langley, BC`,
-    `${input} Oak Ave, Langley, BC`,
-    `${input} Maple Dr, Langley, BC`,
-  ];
-  return mockAddresses.slice(0, 3);
-}
-
-function mockFetchSatelliteImage(address: string): Promise<string> {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve(
-        `https://api.mapbox.com/styles/v1/mapbox/satellite-v9/static/-122.75,49.05,15,0,0/600x400@2x?access_token=pk.eyJ1IjoibWFwYm94IiwiYSI6ImNpejY4NXVycTA2emYycW1qYTk5bWV2MjMifQ.rJcFIG214AriISLbB6B5aw`
-      );
-    }, 800);
-  });
+function getStaticMapUrl(lat: number, lng: number) {
+  return `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=20&size=600x400&maptype=satellite&key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY}`;
 }
 
 const QuoteGenerator = () => {
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
-  const [addressSuggestions, setAddressSuggestions] = useState<string[]>([]);
-  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
   const [data, setData] = useState<QuoteData>({
     address: '',
+    lat: null,
+    lng: null,
     squareFeet: 2500,
     stories: 2,
     sidingType: 'vinyl',
@@ -93,25 +48,36 @@ const QuoteGenerator = () => {
     satelliteImage: null,
   });
 
-  const handleAddressInput = (input: string) => {
-    setData((prev) => ({ ...prev, address: input }));
-    if (input.length >= 3) {
-      const suggestions = mockPlacesAutocomplete(input);
-      setAddressSuggestions(suggestions);
-      setShowSuggestions(true);
-    } else {
-      setShowSuggestions(false);
-    }
-  };
+  const {
+    value,
+    suggestions,
+    setValue,
+    clearSuggestions,
+  } = usePlacesAutocomplete({
+    debounce: 300,
+  });
 
   const handleAddressSelect = async (address: string) => {
-    setData((prev) => ({ ...prev, address }));
-    setShowSuggestions(false);
     setLoading(true);
+    try {
+      const results = await getGeocode({ address });
+      const formattedAddress = results[0]?.formatted_address ?? address;
+      const { lat, lng } = await getLatLng(results[0]);
+      // Use backend proxy for image to avoid CORS issues
+      const imageUrl = `/api/satellite-image?lat=${lat}&lng=${lng}`;
 
-    const imageUrl = await mockFetchSatelliteImage(address);
-    setData((prev) => ({ ...prev, satelliteImage: imageUrl }));
-    setLoading(false);
+      setData((prev) => ({
+        ...prev,
+        address: formattedAddress,
+        lat,
+        lng,
+        satelliteImage: imageUrl,
+      }));
+      setValue(formattedAddress, false);
+      clearSuggestions();
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleStorySelect = (storyCount: number) => {
@@ -125,11 +91,49 @@ const QuoteGenerator = () => {
   const handleNextStep = async () => {
     if (step === 4) {
       setLoading(true);
-      setTimeout(() => {
-        const quote = simulateQuoteLogic(data);
-        setData((prev) => ({ ...prev, quote }));
+      try {
+        const response = await fetch('/api/quote', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            address: data.address,
+            stories: data.stories,
+            squareFeet: data.squareFeet,
+            addOns: data.addOns,
+            lat: data.lat,
+            lng: data.lng,
+            email: data.email,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to fetch quote');
+        }
+
+        const result = (await response.json()) as {
+          minPrice?: number;
+          maxPrice?: number;
+          estate?: boolean;
+          message?: string;
+        };
+
+        if (result.estate) {
+          // Estate service - show premium message
+          setData((prev) => ({
+            ...prev,
+            quote: { min: 0, max: 0 }, // Placeholder
+          }));
+        } else {
+          setData((prev) => ({
+            ...prev,
+            quote: { min: result.minPrice || 0, max: result.maxPrice || 0 },
+          }));
+        }
+        // Move to thank you screen after quote is generated
+        setSubmitted(true);
+      } finally {
         setLoading(false);
-      }, 2000);
+      }
     } else {
       setStep(step + 1);
     }
@@ -155,12 +159,132 @@ const QuoteGenerator = () => {
   return (
     <div className="min-h-screen bg-gradient-to-b from-white to-gray-50 py-12 px-6">
       <div className="max-w-2xl mx-auto">
+        {submitted ? (
+          // Thank You Page
+          <div className="text-center">
+            <div className="mb-12">
+              {data.squareFeet >= 4500 ? (
+                <>
+                  <svg className="w-24 h-24 mx-auto mb-6" fill="#2d3a6b" viewBox="0 0 24 24">
+                    <path d="M12 2L15.09 8.26h6.79l-5.5 3.99 2.09 6.26L12 14.5l-5.38 3.99 2.09-6.26-5.5-3.99h6.79L12 2z" />
+                  </svg>
+                  <h1 className="text-5xl font-bold mb-4" style={{ color: '#2d3a6b' }}>
+                    Estate Service Required
+                  </h1>
+                  <p className="text-2xl text-gray-600 mb-2">
+                    Your home qualifies for our Executive Soft Wash package
+                  </p>
+                </>
+              ) : (
+                <>
+                  <svg className="w-24 h-24 mx-auto mb-6 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <h1 className="text-5xl font-bold mb-4" style={{ color: '#2d3a6b' }}>
+                    Thank You!
+                  </h1>
+                  <p className="text-2xl text-gray-600 mb-2">
+                    We've received your quote request
+                  </p>
+                </>
+              )}
+              <p className="text-lg text-gray-500">
+                {data.squareFeet < 4500 && 'Mark will contact you before the end of the day'}
+              </p>
+            </div>
+
+            <div className="bg-white rounded-3xl shadow-lg p-8 md:p-12 mb-8">
+              <div className="space-y-6">
+                {data.squareFeet >= 4500 ? (
+                  // Estate message
+                  <div>
+                    <p className="text-gray-600 mb-4 text-lg leading-relaxed">
+                      Based on the size of your property ({data.squareFeet.toLocaleString()} sq ft), your home qualifies for our <strong>Executive Soft Wash package</strong>.
+                    </p>
+                    <p className="text-gray-600 mb-4 text-lg leading-relaxed">
+                      For premium properties like yours, we perform a manual safety assessment to ensure delicate materials (slate, cedar, imported stone, copper gutters) are protected with our most specialized techniques.
+                    </p>
+                    <p className="text-gray-600 text-lg leading-relaxed font-semibold">
+                      Mark will call you within 15 minutes to discuss your property's unique needs and provide a custom rate.
+                    </p>
+                  </div>
+                ) : (
+                  // Standard quote
+                  <div>
+                    <p className="text-gray-600 mb-2">Quote Summary</p>
+                    <div className="bg-gray-50 rounded-2xl p-6 space-y-3">
+                      <div className="flex justify-between">
+                        <span className="text-gray-700">Address:</span>
+                        <span className="font-semibold">{data.address}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-700">Stories:</span>
+                        <span className="font-semibold">{data.stories}</span>
+                      </div>
+                      {Object.values(data.addOns).some((v) => v) && (
+                        <div className="border-t pt-3">
+                          <span className="text-gray-700">Add-ons:</span>
+                          <div className="text-sm text-gray-600 mt-1">
+                            {data.addOns.driveway && <div>✓ Driveway Cleaning</div>}
+                            {data.addOns.gutters && <div>✓ Gutter Cleaning</div>}
+                            {data.addOns.deckPatio && <div>✓ Deck/Patio Cleaning</div>}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                <div className={data.squareFeet >= 4500 ? '' : 'py-6 border-t'}>
+                  {data.squareFeet < 4500 && (
+                    <>
+                      <p className="text-gray-600 text-lg mb-2">Estimated Price Range</p>
+                      <p className="text-5xl font-bold" style={{ color: '#2d3a6b' }}>
+                        ${data.quote?.min.toLocaleString()} - ${data.quote?.max.toLocaleString()}
+                      </p>
+                      {Object.values(data.addOns).some((v) => v) && (
+                        <p className="text-sm text-gray-500 mt-4">
+                          + Add-ons (quoted in person)
+                        </p>
+                      )}
+                    </>
+                  )}
+                  <p className="text-sm text-gray-500 mt-4">
+                    Confirmation email sent to {data.email}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <p className="text-gray-600">Have questions? Contact us anytime</p>
+              <div className="flex flex-col md:flex-row gap-4 justify-center">
+                <a
+                  href="tel:(206)619-7551"
+                  className="px-8 py-4 rounded-xl font-bold text-lg transition-all"
+                  style={{ backgroundColor: '#2d3a6b', color: 'white' }}
+                >
+                  Call Us: (206) 619-7551
+                </a>
+                <a
+                  href="mailto:waterboys@example.com"
+                  className="px-8 py-4 rounded-xl font-bold text-lg transition-all border-2"
+                  style={{ borderColor: '#2d3a6b', color: '#2d3a6b' }}
+                >
+                  Email Us
+                </a>
+              </div>
+            </div>
+          </div>
+        ) : (
+          // Original wizard pages
+          <>
         <div className="text-center mb-12">
           <h1 className="text-5xl font-bold mb-3" style={{ color: '#2d3a6b' }}>
             Get Your Free Quote
           </h1>
           <p className="text-lg text-gray-600">
-            We'll analyze your home and create a personalized estimate
+            House Washing - We'll analyze your home and create a personalized estimate
           </p>
         </div>
 
@@ -196,20 +320,20 @@ const QuoteGenerator = () => {
                 </label>
                 <input
                   type="text"
-                  value={data.address}
-                  onChange={(e) => handleAddressInput(e.target.value)}
+                  value={value}
+                  onChange={(e) => setValue(e.target.value)}
                   placeholder="123 Main St, Langley, BC..."
                   className="w-full px-4 py-4 border-2 border-gray-300 rounded-2xl focus:outline-none focus:border-blue-500 transition text-lg"
                 />
-                {showSuggestions && addressSuggestions.length > 0 && (
+                {suggestions.status === 'OK' && suggestions.data.length > 0 && (
                   <div className="absolute top-full left-0 right-0 mt-2 bg-white border-2 border-gray-300 rounded-2xl shadow-lg z-10">
-                    {addressSuggestions.map((suggestion, idx) => (
+                    {suggestions.data.map((suggestion) => (
                       <button
-                        key={idx}
-                        onClick={() => handleAddressSelect(suggestion)}
+                        key={suggestion.place_id}
+                        onClick={() => handleAddressSelect(suggestion.description)}
                         className="w-full text-left px-4 py-3 hover:bg-gray-50 transition border-b last:border-b-0"
                       >
-                        <p className="font-medium">{suggestion}</p>
+                        <p className="font-medium">{suggestion.description}</p>
                       </button>
                     ))}
                   </div>
@@ -224,26 +348,6 @@ const QuoteGenerator = () => {
                       alt="Your property"
                       className="w-full h-full object-cover"
                     />
-                    <div className="absolute inset-0 bg-black bg-opacity-30 flex flex-col items-center justify-center">
-                      <h3 className="text-white text-2xl font-bold text-center mb-8">
-                        How many stories is this home?
-                      </h3>
-                      <div className="flex gap-4">
-                        {storyOptions.map((option) => (
-                          <button
-                            key={option.value}
-                            onClick={() => handleStorySelect(option.value)}
-                            className={`px-6 py-3 rounded-xl font-bold text-lg transition-all ${
-                              data.stories === option.value
-                                ? 'bg-white text-blue-600 shadow-lg'
-                                : 'bg-white bg-opacity-70 text-gray-800 hover:bg-opacity-90'
-                            }`}
-                          >
-                            {option.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
                   </div>
 
                   <div className="bg-blue-50 border-2 border-blue-200 rounded-2xl p-4">
@@ -375,9 +479,9 @@ const QuoteGenerator = () => {
 
               <div className="space-y-4">
                 {[
-                  { key: 'driveway', label: 'Driveway Cleaning', price: '+$150' },
-                  { key: 'gutters', label: 'Gutter Cleaning', price: '+$120' },
-                  { key: 'deckPatio', label: 'Deck/Patio Cleaning', price: '+$200' },
+                  { key: 'driveway', label: 'Driveway Cleaning' },
+                  { key: 'gutters', label: 'Gutter Cleaning' },
+                  { key: 'deckPatio', label: 'Deck/Patio Cleaning' },
                 ].map((addon) => (
                   <div
                     key={addon.key}
@@ -402,7 +506,6 @@ const QuoteGenerator = () => {
                       <p className="font-semibold text-lg" style={{ color: '#2d3a6b' }}>
                         {addon.label}
                       </p>
-                      <p className="text-sm text-gray-600">{addon.price}</p>
                     </div>
                     <div
                       className={`w-12 h-12 rounded-full flex items-center justify-center transition-all ${
@@ -543,21 +646,22 @@ const QuoteGenerator = () => {
             className="flex-1 px-6 py-4 rounded-xl font-bold text-lg text-white transition-all hover:opacity-90 disabled:opacity-50"
             style={{ backgroundColor: '#2d3a6b' }}
           >
-            {loading ? 'Analyzing...' : data.quote && step === 4 ? 'Send Quote to Email' : step === 4 ? 'Generate Quote' : 'Next'}
+            {loading ? 'Analyzing...' : step === 4 ? 'Generate Quote' : 'Next'}
           </button>
         </div>
+        <style>{`
+          @keyframes spin {
+            from {
+              transform: rotate(0deg);
+            }
+            to {
+              transform: rotate(360deg);
+            }
+          }
+        `}</style>
+        </>
+        )}
       </div>
-
-      <style>{`
-        @keyframes spin {
-          from {
-            transform: rotate(0deg);
-          }
-          to {
-            transform: rotate(360deg);
-          }
-        }
-      `}</style>
     </div>
   );
 };
