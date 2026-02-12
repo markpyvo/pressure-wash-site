@@ -151,21 +151,8 @@ export async function POST(request: NextRequest) {
       basePrice = 650;
     }
 
-    // Add-on pricing
-    let addOnsCost = 0;
-    if (addOns.driveway) addOnsCost += 250;
-    if (addOns.gutters) addOnsCost += 150;
-    if (addOns.deckPatio) addOnsCost += 200;
-
-    // Location-based adjustment (example: higher price for areas far from base)
-    // Langley, BC approximate center: 49.05, -122.75
-    const langleyLat = 49.05;
-    const langleyLng = -122.75;
-    const distanceDelta =
-      Math.abs(lat - langleyLat) + Math.abs(lng - langleyLng);
-    const locationMultiplier = 1 + distanceDelta * 0.05; // 5% increase per degree
-
-    const subtotal = (basePrice + addOnsCost) * locationMultiplier;
+    // Add-ons are collected but not priced - will be calculated on site
+    const subtotal = basePrice;
 
     // Calculate min and max with margin
     const minPrice = Math.round(subtotal);

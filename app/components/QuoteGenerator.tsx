@@ -242,11 +242,9 @@ const QuoteGenerator = () => {
                       <p className="text-5xl font-bold" style={{ color: '#2d3a6b' }}>
                         ${data.quote?.min.toLocaleString()} - ${data.quote?.max.toLocaleString()}
                       </p>
-                      {Object.values(data.addOns).some((v) => v) && (
-                        <p className="text-sm text-gray-500 mt-4">
-                          + Add-ons (quoted in person)
-                        </p>
-                      )}
+                      <p className="text-sm text-gray-500 mt-4">
+                        Quote for wash only. Additional services will be calculated on site.
+                      </p>
                     </>
                   )}
                   <p className="text-sm text-gray-500 mt-4">
@@ -589,7 +587,7 @@ const QuoteGenerator = () => {
                       ${data.quote.min.toLocaleString()} - ${data.quote.max.toLocaleString()}
                     </p>
                     <p className="text-sm text-gray-500 mt-4">
-                      This is an estimate. Final price may vary based on job complexity.
+                      Quote for wash only. Selected add-ons will be calculated on site.
                     </p>
                   </div>
 
