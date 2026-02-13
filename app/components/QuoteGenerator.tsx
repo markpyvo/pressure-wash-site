@@ -9,7 +9,7 @@ interface QuoteData {
   lng: number | null;
   squareFeet: number;
   stories: number;
-  sidingType: string;
+  material: string;  // Updated: material instead of sidingType
   addOns: {
     driveway: boolean;
     gutters: boolean;
@@ -19,6 +19,16 @@ interface QuoteData {
   quote: {
     min: number;
     max: number;
+    breakdown?: {
+      basePrice: number;
+      materialSurcharge: number;
+      travelSurcharge: number;
+    };
+    routing?: {
+      distance: number;
+      duration: string;
+      travelSurcharge: number;
+    };
   } | null;
   satelliteImage: string | null;
 }
@@ -31,13 +41,14 @@ const QuoteGenerator = () => {
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [distanceError, setDistanceError] = useState<{ distance: number; address: string } | null>(null);
   const [data, setData] = useState<QuoteData>({
     address: '',
     lat: null,
     lng: null,
     squareFeet: 2500,
     stories: 2,
-    sidingType: 'vinyl',
+    material: 'vinyl',  // Updated: default material for risk-based pricing
     addOns: {
       driveway: false,
       gutters: false,
@@ -99,6 +110,7 @@ const QuoteGenerator = () => {
             address: data.address,
             stories: data.stories,
             squareFeet: data.squareFeet,
+            material: data.material,  // New: send material for risk-based pricing
             addOns: data.addOns,
             lat: data.lat,
             lng: data.lng,
@@ -106,16 +118,39 @@ const QuoteGenerator = () => {
           }),
         });
 
-        if (!response.ok) {
-          throw new Error('Failed to fetch quote');
-        }
-
         const result = (await response.json()) as {
           minPrice?: number;
           maxPrice?: number;
+          breakdown?: {
+            basePrice: number;
+            materialSurcharge: number;
+            travelSurcharge: number;
+          };
+          routing?: {
+            distance: number;
+            duration: string;
+            travelSurcharge: number;
+          };
           estate?: boolean;
           message?: string;
+          error?: string;
+          distance?: number;
         };
+
+        // PRIORITY 1: Handle out-of-service-area errors (400 with distance info)
+        if (result.error && result.distance !== undefined) {
+          setDistanceError({
+            distance: result.distance,
+            address: data.address,
+          });
+          setLoading(false);
+          return;
+        }
+
+        // PRIORITY 2: Handle other API errors
+        if (!response.ok) {
+          throw new Error(result.error || 'Failed to fetch quote');
+        }
 
         if (result.estate) {
           // Estate service - show premium message
@@ -126,11 +161,19 @@ const QuoteGenerator = () => {
         } else {
           setData((prev) => ({
             ...prev,
-            quote: { min: result.minPrice || 0, max: result.maxPrice || 0 },
+            quote: {
+              min: result.minPrice || 0,
+              max: result.maxPrice || 0,
+              breakdown: result.breakdown,
+              routing: result.routing,
+            },
           }));
         }
         // Move to thank you screen after quote is generated
         setSubmitted(true);
+      } catch (error) {
+        console.error('Quote request error:', error);
+        alert(error instanceof Error ? error.message : 'Failed to generate quote. Please try again.');
       } finally {
         setLoading(false);
       }
@@ -149,9 +192,9 @@ const QuoteGenerator = () => {
     { label: '3+ Story', value: 3 },
   ];
 
-  const sidingOptions = [
+  // Updated: Material options for pricing
+  const materialOptions = [
     { label: 'Vinyl', value: 'vinyl' },
-    { label: 'Wood', value: 'wood' },
     { label: 'Brick', value: 'brick' },
     { label: 'Stucco', value: 'stucco' },
   ];
@@ -159,7 +202,68 @@ const QuoteGenerator = () => {
   return (
     <div className="min-h-screen bg-gradient-to-b from-white to-gray-50 py-12 px-6">
       <div className="max-w-2xl mx-auto">
-        {submitted ? (
+        {distanceError ? (
+          // Too Far Screen
+          <div className="text-center">
+            <div className="mb-12">
+              <svg className="w-24 h-24 mx-auto mb-6" fill="none" stroke="#d32f2f" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4v.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <h1 className="text-5xl font-bold mb-4" style={{ color: '#d32f2f' }}>
+                Too Far Away
+              </h1>
+              <p className="text-2xl text-gray-600 mb-2">
+                Unfortunately, we can't service this location
+              </p>
+            </div>
+
+            <div className="bg-white rounded-3xl shadow-lg p-8 md:p-12 mb-8">
+              <div className="space-y-6">
+                <div>
+                  <p className="text-lg text-gray-600 mb-4">
+                    <strong>{distanceError.address}</strong>
+                  </p>
+                  <p className="text-3xl font-bold" style={{ color: '#2d3a6b' }}>
+                    {Math.round(distanceError.distance)}km away
+                  </p>
+                  <p className="text-gray-500 mt-4 text-lg">
+                    We currently serve within 45km of Langley, BC.
+                  </p>
+                </div>
+                <div className="bg-gray-50 rounded-2xl p-6">
+                  <p className="text-gray-600 mb-4">
+                    If you believe this is an error or would like to discuss possibilities, please feel free to contact us directly:
+                  </p>
+                  <div className="space-y-2">
+                    <p className="text-gray-700">
+                      <strong>Phone:</strong>{' '}
+                      <a href="tel:(206) 619-7551" className="text-blue-600 hover:underline">
+                        (206) 619-7551
+                      </a>
+                    </p>
+                    <p className="text-gray-700">
+                      <strong>Email:</strong>{' '}
+                      <a href={`mailto:${process.env.NEXT_PUBLIC_OWNER_EMAIL}`} className="text-blue-600 hover:underline">
+                        {process.env.NEXT_PUBLIC_OWNER_EMAIL}
+                      </a>
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={() => {
+                setDistanceError(null);
+                setStep(1);
+              }}
+              className="px-8 py-3 rounded-lg font-bold text-lg hover:opacity-80 transition"
+              style={{ backgroundColor: '#2d3a6b', color: '#ffffff' }}
+            >
+              Try Another Address
+            </button>
+          </div>
+        ) : submitted ? (
           // Thank You Page
           <div className="text-center">
             <div className="mb-12">
@@ -440,22 +544,22 @@ const QuoteGenerator = () => {
 
               <div>
                 <label className="block text-lg font-semibold mb-4" style={{ color: '#2d3a6b' }}>
-                  Siding Type
+                  Siding Material
                 </label>
-                <div className="grid grid-cols-2 gap-4">
-                  {sidingOptions.map((option) => (
+                <div className="grid grid-cols-1 gap-3">
+                  {materialOptions.map((option) => (
                     <button
                       key={option.value}
-                      onClick={() => setData((prev) => ({ ...prev, sidingType: option.value }))}
-                      className={`p-4 rounded-2xl font-semibold transition-all ${
-                        data.sidingType === option.value
+                      onClick={() => setData((prev) => ({ ...prev, material: option.value }))}
+                      className={`p-4 rounded-2xl font-semibold transition-all text-left ${
+                        data.material === option.value
                           ? 'shadow-lg'
                           : 'shadow border border-gray-200'
                       }`}
                       style={{
                         backgroundColor:
-                          data.sidingType === option.value ? '#2d3a6b' : '#ffffff',
-                        color: data.sidingType === option.value ? '#ffffff' : '#2d3a6b',
+                          data.material === option.value ? '#2d3a6b' : '#ffffff',
+                        color: data.material === option.value ? '#ffffff' : '#2d3a6b',
                       }}
                     >
                       {option.label}
@@ -564,9 +668,15 @@ const QuoteGenerator = () => {
                       <span className="font-semibold">{data.stories}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-gray-700">Siding:</span>
-                      <span className="font-semibold capitalize">{data.sidingType}</span>
+                      <span className="text-gray-700">Material:</span>
+                      <span className="font-semibold capitalize">{data.material}</span>
                     </div>
+                    {data.quote?.routing && (
+                      <div className="flex justify-between">
+                        <span className="text-gray-700">Distance:</span>
+                        <span className="font-semibold">{data.quote.routing.distance} km</span>
+                      </div>
+                    )}
                     {Object.values(data.addOns).some((v) => v) && (
                       <>
                         <div className="border-t pt-3">
@@ -586,6 +696,32 @@ const QuoteGenerator = () => {
                     <p className="text-5xl font-bold" style={{ color: '#2d3a6b' }}>
                       ${data.quote.min.toLocaleString()} - ${data.quote.max.toLocaleString()}
                     </p>
+                    
+                    {/* NEW: Display pricing breakdown with travel surcharge */}
+                    {data.quote.breakdown && (
+                      <div className="mt-8 bg-blue-50 rounded-2xl p-6 text-left">
+                        <h3 className="font-bold mb-4" style={{ color: '#2d3a6b' }}>Price Breakdown</h3>
+                        <div className="space-y-2 text-sm">
+                          <div className="flex justify-between">
+                            <span className="text-gray-700">Base Service ({data.stories} story/stories):</span>
+                            <span className="font-semibold">${data.quote.breakdown.basePrice.toFixed(2)}</span>
+                          </div>
+                          {data.quote.breakdown.materialSurcharge > 0 && (
+                            <div className="flex justify-between">
+                              <span className="text-gray-700">{data.material.charAt(0).toUpperCase() + data.material.slice(1)} Material Surcharge:</span>
+                              <span className="font-semibold">+${data.quote.breakdown.materialSurcharge.toFixed(2)}</span>
+                            </div>
+                          )}
+                          {data.quote.breakdown.travelSurcharge > 0 && (
+                            <div className="flex justify-between border-t pt-2">
+                              <span className="text-gray-700">Travel Surcharge ({data.quote.routing?.distance}km):</span>
+                              <span className="font-semibold text-orange-600">+${data.quote.breakdown.travelSurcharge.toFixed(2)}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    
                     <p className="text-sm text-gray-500 mt-4">
                       Quote for wash only. Selected add-ons will be calculated on site.
                     </p>

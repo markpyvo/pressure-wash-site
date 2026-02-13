@@ -1,12 +1,43 @@
+/**
+ * ============================================================================
+ * QUOTE GENERATION API ENDPOINT
+ * ============================================================================
+ *
+ * PURPOSE:
+ * Receives quote requests and returns pricing quotes with routing validation
+ * and material-based risk adjustment.
+ *
+ * FLOW:
+ * 1. Rate Limiting → Prevent quote request abuse (5 per customer per 24h)
+ * 2. Input Validation → Reject malformed requests early
+ * 3. Geospatial Routing → Call Distance Matrix, validate service area
+ * 4. Risk Pricing → Apply material multiplier to base rate
+ * 5. Response → Return itemized breakdown with routing details
+ * 6. Notifications → Async email to admin + customer
+ *
+ * SECURITY:
+ * • Rate limiting protects backend from flood attacks
+ * • HTML escaping prevents XSS in email templates
+ * • Email validation prevents invalid address abuse
+ * • API returns 400/503 on validation failures (not 500)
+ *
+ * ============================================================================
+ */
 import { NextRequest, NextResponse } from 'next/server';
 import { Ratelimit } from '@upstash/ratelimit';
 import { Redis } from '@upstash/redis';
 import { Resend } from 'resend';
+import {
+  calculateRouting,
+  calculateQuoteWithMaterial,
+  RoutingError,
+} from '@/app/lib/pricing';
 
 interface QuoteRequest {
   address: string;
   stories: number;
   squareFeet: number;
+  material?: string; // New: material type for risk-based pricing
   addOns: {
     driveway: boolean;
     gutters: boolean;
@@ -32,7 +63,7 @@ const ratelimit = new Ratelimit({
 // Initialize Resend
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-// Get client IP address
+// UTILITY: Extract client IP for rate limiting (respects proxy headers)
 function getClientIp(request: NextRequest): string {
   const forwardedFor = request.headers.get('x-forwarded-for');
   if (forwardedFor) {
@@ -41,13 +72,13 @@ function getClientIp(request: NextRequest): string {
   return request.headers.get('x-real-ip') || '127.0.0.1';
 }
 
-// Validate email format
+// VALIDATION: RFC 5321 email format check
 function isValidEmail(email: string): boolean {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return emailRegex.test(email) && email.length <= 254;
 }
 
-// Escape HTML to prevent injection
+// SECURITY: HTML entity encoding prevents XSS in email templates
 function escapeHtml(text: string): string {
   const map: { [key: string]: string } = {
     '&': '&amp;',
@@ -61,10 +92,8 @@ function escapeHtml(text: string): string {
 
 export async function POST(request: NextRequest) {
   try {
-    // Get client IP for rate limiting
+    // RATE LIMITING: Prevent abuse—max 5 requests per customer per 24 hours
     const clientIp = getClientIp(request);
-
-    // Skip rate limiting on localhost (development)
     const isLocalhost = clientIp === '127.0.0.1' || clientIp === '::1';
 
     let rateLimitHeaders = {
@@ -74,7 +103,6 @@ export async function POST(request: NextRequest) {
     };
 
     if (!isLocalhost) {
-      // Check rate limit only for non-localhost
       const { success, limit, remaining, reset } = await ratelimit.limit(
         `quote_${clientIp}`
       );
@@ -100,75 +128,102 @@ export async function POST(request: NextRequest) {
     }
 
     const body = (await request.json()) as QuoteRequest;
+    const { address, stories, squareFeet, material = 'vinyl', addOns, lat, lng, email } = body;
 
-    const { address, stories, squareFeet, addOns, lat, lng, email } = body;
-
-    // Validate required fields
+    // INPUT VALIDATION: Reject incomplete requests immediately
     if (!address || !stories || !lat || !lng || !email || squareFeet === undefined) {
       return NextResponse.json(
         { error: 'Missing required fields' },
-        {
-          status: 400,
-          headers: rateLimitHeaders,
-        }
+        { status: 400, headers: rateLimitHeaders }
       );
     }
 
-    // Check for "Estate Service" homes (4,500+ sq ft)
+    // BUSINESS RULE: Estate properties (4500+ sq ft) require manual quoting
+    // Rationale: Complexity and custom requirements prevent accurate automation
     if (squareFeet >= 4500) {
-      // Send estate notification email instead of quote
       sendEstateNotification(address, email, stories, squareFeet, addOns).catch(
         (error) => console.error('Estate notification failed:', error)
       );
 
       return NextResponse.json(
         { estate: true, message: 'Estate Service Required' },
-        {
-          status: 200,
-          headers: rateLimitHeaders,
-        }
+        { status: 200, headers: rateLimitHeaders }
       );
     }
 
-    // Validate email format
+    // EMAIL VALIDATION: Prevent invalid address abuse
     if (!isValidEmail(email)) {
       return NextResponse.json(
         { error: 'Invalid email address' },
-        {
-          status: 400,
-          headers: rateLimitHeaders,
-        }
+        { status: 400, headers: rateLimitHeaders }
       );
     }
 
-    // Base pricing by story count
-    let basePrice = 0;
-    if (stories === 1) {
-      basePrice = 350;
-    } else if (stories === 2) {
-      basePrice = 500;
-    } else {
-      basePrice = 650;
+    // GEOSPATIAL ROUTING: Validate service area and calculate travel surcharge
+    const googleMapsKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY;
+    if (!googleMapsKey) {
+      console.error('Google Maps API key not configured');
+      return NextResponse.json(
+        { error: 'Routing service unavailable. Please try again later.' },
+        { status: 503, headers: rateLimitHeaders }
+      );
     }
 
-    // Add-ons are collected but not priced - will be calculated on site
-    const subtotal = basePrice;
+    const routingResult = await calculateRouting(address, googleMapsKey);
 
-    // Calculate min and max with margin
-    const minPrice = Math.round(subtotal);
-    const maxPrice = Math.round(subtotal * 1.15); // 15% margin
+    // GUARDRAIL: Reject jobs outside profitable service area
+    if (!routingResult.isValid) {
+      if (routingResult.error === RoutingError.OUT_OF_SERVICE_AREA) {
+        return NextResponse.json(
+          {
+            error: 'Outside service area',
+            message: `Your location is ${Math.round(routingResult.distance)}km away. We currently serve within 45km of Langley, BC.`,
+            distance: Math.round(routingResult.distance),
+          },
+          { status: 400, headers: rateLimitHeaders }
+        );
+      } else if (routingResult.error === RoutingError.INVALID_ADDRESS) {
+        return NextResponse.json(
+          { error: 'Invalid address. Please verify your location.' },
+          { status: 400, headers: rateLimitHeaders }
+        );
+      }
+    }
 
-    // Send emails asynchronously (don't wait for them)
-    sendEmails(address, email, minPrice, maxPrice, stories, addOns).catch(
-      (error) => console.error('Email sending failed:', error)
+    // RISK-ADJUSTED PRICING: Apply material multiplier to base rate
+    const quoteBreakdown = calculateQuoteWithMaterial(
+      stories,
+      material,
+      routingResult.travelSurcharge
     );
 
+    const { minPrice, maxPrice, breakdown } = quoteBreakdown;
+
+    // ASYNC NOTIFICATIONS: Send itemized emails (non-blocking)
+    sendEmails(
+      address,
+      email,
+      minPrice,
+      maxPrice,
+      stories,
+      addOns,
+      material,
+      breakdown,
+      routingResult.distance
+    ).catch((error) => console.error('Email sending failed:', error));
+
     return NextResponse.json(
-      { minPrice, maxPrice },
       {
-        status: 200,
-        headers: rateLimitHeaders,
-      }
+        minPrice,
+        maxPrice,
+        breakdown,
+        routing: {
+          distance: Math.round(routingResult.distance),
+          duration: routingResult.duration,
+          travelSurcharge: routingResult.travelSurcharge,
+        },
+      },
+      { status: 200, headers: rateLimitHeaders }
     );
   } catch (error) {
     console.error('Quote API error:', error);
@@ -186,7 +241,10 @@ async function sendEmails(
   minPrice: number,
   maxPrice: number,
   stories: number,
-  addOns: { driveway: boolean; gutters: boolean; deckPatio: boolean }
+  addOns: { driveway: boolean; gutters: boolean; deckPatio: boolean },
+  material: string,
+  breakdown: { basePrice: number; materialSurcharge: number; travelSurcharge: number },
+  distance: number
 ) {
   const ownerEmail = process.env.OWNER_EMAIL;
 
@@ -203,20 +261,23 @@ async function sendEmails(
   const addOnsText =
     selectedAddOns.length > 0 ? selectedAddOns.join(', ') : 'None';
 
-  // Sanitize address for HTML output
+  // SECURITY: HTML entity encoding prevents XSS attacks in email templates
   const sanitizedAddress = escapeHtml(address);
 
-  // Email 1: Admin notification (to owner)
+  // ADMIN NOTIFICATION: Itemized breakdown enables informed business decisions
+  // Includes distance metrics to track profitability patterns and routing efficiency
   const adminEmailPromise = resend.emails.send({
     from: 'onboarding@resend.dev',
     to: ownerEmail,
-    subject: `New Lead: ${sanitizedAddress} - $${minPrice.toLocaleString()}-$${maxPrice.toLocaleString()}`,
-    text: `New Quote Request\n\nAddress: ${address}\nStories: ${stories}\nAdd-ons: ${addOnsText}\nPrice Range: $${minPrice.toLocaleString()} - $${maxPrice.toLocaleString()}\nCustomer Email: ${customerEmail}`,
+    subject: `New Lead: ${sanitizedAddress} - $${minPrice.toLocaleString()}-$${maxPrice.toLocaleString()} (${Math.round(distance)}km)`,
+    text: `New Quote Request\n\nAddress: ${address}\nDistance: ${Math.round(distance)}km\nStories: ${stories}\nMaterial: ${material}\nAdd-ons: ${addOnsText}\n\nPrice Breakdown:\n- Base Price: $${breakdown.basePrice}\n- Material Surcharge: $${breakdown.materialSurcharge.toFixed(2)}\n- Travel Surcharge: $${breakdown.travelSurcharge.toFixed(2)}\n\nEstimated Range: $${minPrice.toLocaleString()} - $${maxPrice.toLocaleString()}\nCustomer Email: ${customerEmail}`,
   }).catch((error) => {
     console.error('Failed to send admin email:', error);
   });
 
-  // Email 2: Customer confirmation
+  // CUSTOMER TRANSPARENCY: Itemized pricing breakdown builds trust
+  // Line items show cost factors (base service, material complexity, travel distance)
+  // Educates customers on value proposition and justifies pricing
   const customerEmailTemplate = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
       <h2 style="color: #2d3a6b;">We've Received Your Quote Request</h2>
@@ -227,9 +288,31 @@ async function sendEmails(
       <h3 style="color: #2d3a6b; margin-top: 30px;">Your Estimated Price</h3>
       <p style="font-size: 24px; color: #2d3a6b; font-weight: bold;">$${minPrice.toLocaleString()} - $${maxPrice.toLocaleString()}</p>
       
+      <h3 style="color: #2d3a6b; margin-top: 30px;">Price Breakdown</h3>
+      <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+        <tr style="border-bottom: 1px solid #e0e0e0;">
+          <td style="padding: 10px 0; color: #333;">Base Service (${stories} story/stories)</td>
+          <td style="padding: 10px 0; color: #333; text-align: right;">$${breakdown.basePrice.toFixed(2)}</td>
+        </tr>
+        ${breakdown.materialSurcharge > 0 ? `
+        <tr style="border-bottom: 1px solid #e0e0e0;">
+          <td style="padding: 10px 0; color: #333;">${material.charAt(0).toUpperCase() + material.slice(1)} Material Surcharge</td>
+          <td style="padding: 10px 0; color: #333; text-align: right;">$${breakdown.materialSurcharge.toFixed(2)}</td>
+        </tr>
+        ` : ''}
+        ${breakdown.travelSurcharge > 0 ? `
+        <tr style="border-bottom: 1px solid #e0e0e0;">
+          <td style="padding: 10px 0; color: #333;">Travel Surcharge (${Math.round(distance)}km)</td>
+          <td style="padding: 10px 0; color: #333; text-align: right;">$${breakdown.travelSurcharge.toFixed(2)}</td>
+        </tr>
+        ` : ''}
+      </table>
+      
       <h3 style="color: #2d3a6b; margin-top: 30px;">Details</h3>
       <ul style="line-height: 1.8; color: #333;">
         <li><strong>Stories:</strong> ${stories}</li>
+        <li><strong>Material:</strong> ${material.charAt(0).toUpperCase() + material.slice(1)}</li>
+        <li><strong>Distance:</strong> ${Math.round(distance)}km</li>
         <li><strong>Add-ons:</strong> ${addOnsText}</li>
       </ul>
 
@@ -251,7 +334,8 @@ async function sendEmails(
     console.error('Failed to send customer email:', error);
   });
 
-  // Send both emails in parallel
+  // NOTIFICATION PATTERN: Parallel async execution prevents blocking
+  // Both emails sent concurrently, failures logged but don't impact API response
   await Promise.all([adminEmailPromise, customerEmailPromise]);
 }
 
@@ -270,9 +354,11 @@ async function sendEstateNotification(
     return;
   }
 
+  // SECURITY: HTML entity encoding prevents XSS attacks in email templates
   const sanitizedAddress = escapeHtml(address);
 
-  // Email 1: Owner notification of estate inquiry
+  // ESTATE QUALIFICATION: Properties 4500+ sq ft trigger manual sales workflow
+  // Rationale: Complex properties require custom site assessment and specialized pricing
   const adminEmailPromise = resend.emails.send({
     from: 'onboarding@resend.dev',
     to: ownerEmail,
@@ -282,7 +368,8 @@ async function sendEstateNotification(
     console.error('Failed to send estate admin email:', error);
   });
 
-  // Email 2: Customer confirmation - premium messaging
+  // CUSTOMER EXPERIENCE: Premium messaging for high-value prospects
+  // Positions property as "estate" requiring specialized service (justifies premium pricing model)
   const customerEmailTemplate = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
       <h2 style="color: #2d3a6b;">Estate Service Required</h2>
@@ -316,6 +403,7 @@ async function sendEstateNotification(
     console.error('Failed to send estate customer email:', error);
   });
 
-  // Send both emails in parallel
+  // NOTIFICATION PATTERN: Parallel async execution prevents blocking
+  // Both emails sent concurrently, failures logged but don't impact API response
   await Promise.all([adminEmailPromise, customerEmailPromise]);
 }
